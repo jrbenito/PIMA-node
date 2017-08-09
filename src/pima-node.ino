@@ -373,7 +373,7 @@ void loop() {
     //check if any devices needs to transmit periodic info
     if (!updatesSent && wdtCounter % TXinterval == 0) {
         DebugSerln("Sending periodic updates");
-        for (unsigned int i = 0; i <= sizeof(devices) / sizeof(Device); i++) {
+        for (unsigned int i = 0; i < sizeof(devices) / sizeof(Device); i++) {
             if (devices[i].getSetTX()) {
                 reply = DEFAULT_MSG;
                 reply.devID = devices[i].getId();
