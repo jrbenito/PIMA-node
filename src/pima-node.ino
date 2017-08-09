@@ -107,6 +107,14 @@ bool    setACK = false;             // send ACK message on 'SET' request
 bool    toggle = false;
 bool    updatesSent = false;
 
+typedef struct {
+    int32_t PwrActivDir;
+    int32_t PwrReactInd;
+    int32_t PwrReactCap;
+    int32_t PwrActivRev;
+} Power;
+Power power;
+
 volatile long wdtCounter = 0;
 #define MAX_PKG_SIZE 20
 char PIMAPacket[MAX_PKG_SIZE];
@@ -179,6 +187,52 @@ void receivePIMAPacket() {
 }
 
 void processPIMAPacket() {
+
+    int32_t value;
+    uint8_t index = 0;
+    char buff[6];
+    buff[5] = "\0";
+    // First 5 bytes are the 10 digit serial number (BCD)
+    for(int i = 0; i < 6; i++) {
+        buff[i] = PIMAPacket[i];
+    }
+    SerialNumber = atoi(buff);
+
+    // the 6th byte is size, 7th and 8th are scope and index
+    // registers for KWh and KVAh are all 3 bytes BCD, hence,
+    // size cannot be larger than 5 (2 escope+index and 3 data)
+    if ((PIMAPacket[6] == ESCOPO) && (PIMAPacket[5] > 5)) {
+
+        // take the CRC bytes
+        CRC16H = PIMAPacket[11];
+        CRC16L = PIMAPacket[12];
+
+        // catch index and convert BCD to integer
+        index = (uint8_t)PIMAPacket[7];
+        buff[0] = PIMAPacket[8];
+        buff[1] = PIMAPacket[9];
+        buff[2] = PIMAPacket[10];
+        buff[3] = '\0';
+        value = atol(buff);
+
+        switch(index) {
+            case EATIVA_D:
+                power.PwrActivDir = value;
+                break;
+            case EREATIVAI_D:
+                power.PwrReactInd = value;
+                break;
+            case EREATIVAC_D:
+                power.PwrReactCap = value;
+                break;
+            case EATIVA_R:
+                power.PwrActivRev = value;
+                break;
+            default:
+                break;
+        }
+
+    }
 }
 
 /******************************************/
@@ -227,6 +281,11 @@ void setup() {
 	flash.initialize();
 	PIMASer.begin(2400);
 	PIMASer.flush();
+
+    power.PwrActivDir = -1;
+    power.PwrReactInd = -1;
+    power.PwrReactCap = -1;
+    power.PwrActivRev = -1;
 
 	//configure watchdog as 1s counter for uptime and to wake from sleep 
 	watchdogSetup();	
@@ -402,4 +461,8 @@ void watchdogSetup(void){
 ISR(WDT_vect) // Watchdog timer interrupt.
 {
   wdtCounter++;
+}
+
+uint8_t bcd2dec(uint8_t n) {
+    return n - 6 * (n >> 4);
 }

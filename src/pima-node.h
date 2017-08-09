@@ -10,7 +10,7 @@ void readToggle(Message *mess);
 void writeToggle(const Message *mess);
 void sleep();
 void watchdogSetup(void);
-void buttonHandler();
+uint8_t bcd2dec(uint8_t n);
 
 // devices in the node
 void readLED(Message *mess);
