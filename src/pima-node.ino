@@ -35,6 +35,7 @@
 #include <SPIFlashA.h>      //get it here: https://github.com/lowpowerlab/spiflash
 #define SPIFlash SPIFlashA
 #include <SPI.h>           //included with Arduino IDE install (www.arduino.cc)
+#include <SoftwareSerial.h> // SoftSerial
 #include <Thread.h>        // execution threads
 #include <ThreadController.h>
 #include <device.h>        // Computurist message format
@@ -81,16 +82,19 @@
 /**************************************
 device settings
 **************************************/
+#define DEBUG
 #if defined(DEBUG)
-  SoftwareSerial mySerial(6, 7); //verify pins available
-  #define DebugSer(a) (mySeral.print(a))
-  #define DebugSerln(a) (mySerial.println(a))
+  SoftwareSerial mySerial(2, 7); //verify pins available
+  #define DebugSer(a) (Serial.print(a))
+  #define DebugSerln(a) (Serial.println(a))
+  #define DebugSerbg(a) (Serial.begin(a))
 #else
+  #define mySerial Serial
   #define DebugSer(a)
   #define DebugSerln(a)
 #endif
 
-#define PIMASer Serial // user hardware serial RX to attach PIMA
+#define PIMASer mySerial //Serial // user hardware serial RX to attach PIMA
 #define ESCOPO 0x0A
 #define EATIVA_D 0x02
 #define EREATIVAI_D 0x07
@@ -103,7 +107,7 @@ SPIFlash flash(FLASH_SS, 0x12018); //12018 for 128Mbit Spanion flash
   global variables
   **************************************/
 int     TXinterval = 20;            // periodic transmission interval in seconds
-bool    setACK = false;             // send ACK message on 'SET' request
+bool    setACK = true;             // send ACK message on 'SET' request
 bool    toggle = false;
 bool    updatesSent = false;
 
@@ -118,6 +122,8 @@ Power power;
 volatile long wdtCounter = 0;
 #define MAX_PKG_SIZE 20
 char PIMAPacket[MAX_PKG_SIZE];
+int SerialNumber;
+int CRC16L, CRC16H;
 
 const Message DEFAULT_MSG = {NODEID, 0, 0, 0, 0, VERSION};
 
@@ -127,11 +133,11 @@ const Message DEFAULT_MSG = {NODEID, 0, 0, 0, 0, VERSION};
 
 //Device name(devID, tx_periodically, read_function, optional_write_function)
 
-Device uptimeDev(0, false, readUptime);
+Device uptimeDev(0, true, readUptime);
 Device txIntDev(1, false, readTXInt, writeTXInt);
 Device rssiDev(2, false, readRSSI);
 Device verDev(3, false);
-Device voltDev(4, false, readVoltage);
+Device voltDev(4, true, readVoltage);
 Device ackDev(5, false, readACK, writeACK);
 Device toggleDev(6, false, readToggle, writeToggle);
 Device ledDev(16, false, readLED, writeLED);
@@ -275,7 +281,7 @@ void setup() {
 #endif
     
 #ifdef DEBUG
-    DebugSer.begin(19200);
+    DebugSerbg(19200);
 #endif
 
 	flash.initialize();
@@ -289,9 +295,6 @@ void setup() {
 
 	//configure watchdog as 1s counter for uptime and to wake from sleep 
 	watchdogSetup();	
-
-	//setup interrupt for button
-	//attachInterrupt(BTN_INT, buttonHandler, LOW);
 
 	//send wakeup message
 	Message wakeup = DEFAULT_MSG;
@@ -307,6 +310,7 @@ void loop() {
 	// picked up when a GATEWAY is trying hard to reach this node for a new sketch wireless upload
 	if (radio.receiveDone()) {
 
+        DebugSerln("OTA...");
 		CheckForWirelessHEX(radio, flash, false, 9);
 
 		// if we got here, the message was not a FOTA handshake
@@ -388,8 +392,16 @@ void loop() {
 }
 
 void txRadio(Message * mess){
-  DebugSer(" message ");
+  DebugSer(" message n:");
+  DebugSer(mess->nodeID);
+  DebugSer(" devID:");
   DebugSer(mess->devID);
+  DebugSer(" cmd:");
+  DebugSer(mess->cmd);
+  DebugSer(" intVal:");
+  DebugSer(mess->intVal);
+  DebugSer(" payload: ");
+  DebugSer(mess->payLoad);
   DebugSerln(" sent...");
   if (!radio.sendWithRetry(GATEWAYID, mess, sizeof(*mess), RETRIES, ACK_TIME)){
     DebugSerln("No connection...");
