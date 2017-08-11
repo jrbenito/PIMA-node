@@ -84,17 +84,23 @@ device settings
 **************************************/
 #define DEBUG
 #if defined(DEBUG)
-  SoftwareSerial mySerial(2, 7); //verify pins available
-  #define DebugSer(a) (Serial.print(a))
-  #define DebugSerln(a) (Serial.println(a))
-  #define DebugSerbg(a) (Serial.begin(a))
+//  SoftwareSerial mySerial(6, 7); //verify pins available
+//  #define DebugSer(a) (Serial.print(a))
+//  #define DebugSerln(a) (Serial.println(a))
+//  #define DebugSerbg(a) (Serial.begin(a))
+  SoftwareSerial mySerial(7, 6); //verify pins available
+  #define DebugSer(a) (mySerial.print(a))
+  #define DebugSerln(a) (mySerial.println(a))
+  #define DebugSerbg(a) (mySerial.begin(a))
 #else
+//  SoftwareSerial mySerial(6, 7); //verify pins available
   #define mySerial Serial
   #define DebugSer(a)
   #define DebugSerln(a)
+  #define DebugSerbg(a)
 #endif
 
-#define PIMASer mySerial //Serial // user hardware serial RX to attach PIMA
+#define PIMASer Serial//mySerial //Serial // user hardware serial RX to attach PIMA
 #define ESCOPO 0x0A
 #define EATIVA_D 0x02
 #define EREATIVAI_D 0x07
@@ -106,23 +112,16 @@ SPIFlash flash(FLASH_SS, 0x12018); //12018 for 128Mbit Spanion flash
 /**************************************
   global variables
   **************************************/
-int     TXinterval = 20;            // periodic transmission interval in seconds
-bool    setACK = true;             // send ACK message on 'SET' request
+int     TXinterval = 45;            // periodic transmission interval in seconds
+bool    setACK = false;             // send ACK message on 'SET' request
 bool    toggle = false;
 bool    updatesSent = false;
-
-typedef struct {
-    int32_t PwrActivDir;
-    int32_t PwrReactInd;
-    int32_t PwrReactCap;
-    int32_t PwrActivRev;
-} Power;
 Power power;
 
 volatile long wdtCounter = 0;
 #define MAX_PKG_SIZE 20
-char PIMAPacket[MAX_PKG_SIZE];
-int SerialNumber;
+uint8_t PIMAPacket[MAX_PKG_SIZE];
+uint32_t SerialNumber = -1;
 int CRC16L, CRC16H;
 
 const Message DEFAULT_MSG = {NODEID, 0, 0, 0, 0, VERSION};
@@ -137,15 +136,20 @@ Device uptimeDev(0, true, readUptime);
 Device txIntDev(1, false, readTXInt, writeTXInt);
 Device rssiDev(2, false, readRSSI);
 Device verDev(3, false);
-Device voltDev(4, true, readVoltage);
+Device voltDev(4, false, readVoltage);
 Device ackDev(5, false, readACK, writeACK);
 Device toggleDev(6, false, readToggle, writeToggle);
 Device ledDev(16, false, readLED, writeLED);
+Device pwrADirDev(64, true, readPwrADir);
+Device pwrRIndDev(65, true, readPwrRInd);
+Device pwrRCapDev(66, true, readPwrRCap);
+Device pwrARevDev(67, true, readPwrARev);
 
 //ThreadController controll = ThreadController();
 //Thread blinkLed = Thread();
 static Device devices[] = {uptimeDev, txIntDev, rssiDev, verDev,
-                    voltDev, ackDev, toggleDev, ledDev};
+                    voltDev, ackDev, toggleDev, ledDev, pwrADirDev,
+                    pwrRIndDev, pwrRCapDev, pwrARevDev};
 
 /*******************************************
 put non-system read/write functions here
@@ -159,35 +163,73 @@ void writeLED(const Message *mess) {
     digitalWrite(LED, mess->intVal);
 }
 
+void readPwrADir(Message *mess) {
+    mess->intVal = power.pwrActivDir;
+}
+
+void readPwrRInd(Message *mess) {
+    mess->intVal = power.pwrReactInd;
+}
+
+void readPwrRCap(Message *mess) {
+    mess->intVal = power.pwrReactCap;
+}
+
+void readPwrARev(Message *mess) {
+    mess->intVal = power.pwrActivRev;
+}
+
 void receivePIMAPacket() {
 
-    char c;
-    unsigned int pkgLength = MAX_PKG_SIZE;
-    unsigned int i = 0;
+    uint8_t c;
+    static uint8_t pkgLength = MAX_PKG_SIZE-6;
+    static int8_t i = -2;
     // Serial packet starts with 0xAA55 (2 bytes)
     // followed by serial number (5 bytes)
     // hence, at least 7 bytes might be available
-    if (PIMASer.available() > 7) {
-        if ((PIMASer.read() == 0xAA) && (PIMASer.read() == 0x55)) {
-            // we have a preamble, read other read rest of package
-            while(PIMASer.available()) { 
-                c = PIMASer.read();
-                PIMAPacket[i] = c;
-                i++;
-                // next byte after serial number define the length of data
-                if (i == 6) {
-                    pkgLength = c;
-                    if ((pkgLength+i) > MAX_PKG_SIZE) {
-                        //invalid package length
-                        break;
-                    }
-                }
-                else if (i > (pkgLength + 6)) {
-                        // package complete
-                        processPIMAPacket();
-                        break;
+    while (PIMASer.available() > 0) { 
+        c = PIMASer.read();
+        // Wating for preamble
+        if ((i < -1) && (c == 0xAA)) {
+            i++;
+        }
+        else if ((i < 0) && (c == 0x55)) {
+            i++;
+        }
+        else if ((i >=0)) {
+            PIMAPacket[i] = c;
+            i++;
+            // next byte after serial number define the length of data
+            // (6th byte - not count preamble)
+            if (i == 6) {
+                pkgLength = c;
+                if ((pkgLength+i) > MAX_PKG_SIZE) {
+                    //invalid package length
+                    DebugSerln(F("Invalid Packet!"));
+                    i = -2;
+                    pkgLength = MAX_PKG_SIZE-6;
+                    break;
                 }
             }
+            else if (i >= (pkgLength + 6 + 2)) { // +2 from CRC
+                // package complete
+                DebugSerln(F("Pkt OK"));
+                i = -2;
+                pkgLength = MAX_PKG_SIZE-6;
+                processPIMAPacket();
+                break;
+            }
+            else if (i >= MAX_PKG_SIZE) {
+                i = -2;
+                pkgLength = MAX_PKG_SIZE-6; 
+                break;
+            }
+        }
+        else {
+            DebugSer(F("No Preamble! "));
+            DebugSerln(c);
+            i = -2;
+            pkgLength = MAX_PKG_SIZE-6;
         }
     }
 }
@@ -196,48 +238,67 @@ void processPIMAPacket() {
 
     int32_t value;
     uint8_t index = 0;
-    char buff[6];
-    buff[5] = "\0";
-    // First 5 bytes are the 10 digit serial number (BCD)
-    for(int i = 0; i < 6; i++) {
-        buff[i] = PIMAPacket[i];
+    uint8_t buff[6];
+
+#if 0
+    DebugSer(F("RAW: "));
+    for (int i = 0; i <12; i++) {
+        DebugSer("0123456789ABCDEF"[0x0F & ((unsigned char)PIMAPacket[i]>>4)]);
+        DebugSer("0123456789ABCDEF"[0x0F & (unsigned char)PIMAPacket[i]]);
     }
-    SerialNumber = atoi(buff);
+    DebugSerln(".");
+#endif
+
+    // First 5 bytes are the 10 digit serial number (BCD)
+    SerialNumber = 0;
+    for(int i = 0; i < 5; i++) {
+        buff[i] = bcd2dec(PIMAPacket[i]);
+        SerialNumber = SerialNumber * 100 + (uint32_t)buff[i];
+    }
+    DebugSer(F("SN: "));
+    DebugSerln(SerialNumber);
 
     // the 6th byte is size, 7th and 8th are scope and index
     // registers for KWh and KVAh are all 3 bytes BCD, hence,
     // size cannot be larger than 5 (2 escope+index and 3 data)
-    if ((PIMAPacket[6] == ESCOPO) && (PIMAPacket[5] > 5)) {
+    if ((PIMAPacket[6] == ESCOPO) && (PIMAPacket[5] >= 5)) {
 
         // take the CRC bytes
         CRC16H = PIMAPacket[11];
         CRC16L = PIMAPacket[12];
 
         // catch index and convert BCD to integer
-        index = (uint8_t)PIMAPacket[7];
-        buff[0] = PIMAPacket[8];
-        buff[1] = PIMAPacket[9];
-        buff[2] = PIMAPacket[10];
-        buff[3] = '\0';
-        value = atol(buff);
+        index   = PIMAPacket[7];
+        value   = 0;
+        buff[0] = bcd2dec(PIMAPacket[8]);
+        value = value * 100 + (uint32_t)buff[0];
+        buff[1] = bcd2dec(PIMAPacket[9]);
+        value = value * 100 + (uint32_t)buff[1];
+        buff[2] = bcd2dec(PIMAPacket[10]);
+        value = value * 100 + (uint32_t)buff[2];
 
         switch(index) {
             case EATIVA_D:
-                power.PwrActivDir = value;
+                power.pwrActivDir = value;
                 break;
             case EREATIVAI_D:
-                power.PwrReactInd = value;
+                power.pwrReactInd = value;
                 break;
             case EREATIVAC_D:
-                power.PwrReactCap = value;
+                power.pwrReactCap = value;
                 break;
             case EATIVA_R:
-                power.PwrActivRev = value;
+                power.pwrActivRev = value;
                 break;
             default:
                 break;
         }
-
+    }
+    else {
+        DebugSer(F("Error escope "));
+        DebugSer(PIMAPacket[6]);
+        DebugSer(F(" size "));
+        DebugSerln(PIMAPacket[5]);
     }
 }
 
@@ -248,10 +309,10 @@ void setup() {
 	wdt_disable();
 
 	//set all pins as input with pullups, floating pins can waste power
-	DDRD &= B00100011;       // set Arduino pins 2 to 7 as inputs, leaves 0 & 1 (RX & TX) and 5 as is
-	DDRB &= B11111110;        // set pins 8 to input, leave others alone since they are used by SPI and OSC
-	PORTD |= B11011100;      // enable pullups on pins 2 to 7, leave pins 0 and 1 alone
-	PORTB |= B00000001;      // enable pullups on pin 8 leave others alone
+	//DDRD &= B00100011;       // set Arduino pins 2 to 7 as inputs, leaves 0 & 1 (RX & TX) and 5 as is
+	//DDRB &= B11111110;        // set pins 8 to input, leave others alone since they are used by SPI and OSC
+	//PORTD |= B11011100;      // enable pullups on pins 2 to 7, leave pins 0 and 1 alone
+	//PORTB |= B00000001;      // enable pullups on pin 8 leave others alone
 
     // Initialize I/O
     pinMode(LED, OUTPUT);     // ensures LED is output
@@ -280,18 +341,16 @@ void setup() {
 	radio.writeReg(0x29, 240);   //set REG_RSSITHRESH to -120dBm
 #endif
     
-#ifdef DEBUG
     DebugSerbg(19200);
-#endif
 
 	flash.initialize();
 	PIMASer.begin(2400);
-	PIMASer.flush();
+	//PIMASer.flush();
 
-    power.PwrActivDir = -1;
-    power.PwrReactInd = -1;
-    power.PwrReactCap = -1;
-    power.PwrActivRev = -1;
+    power.pwrActivDir = -1;
+    power.pwrReactInd = -1;
+    power.pwrReactCap = -1;
+    power.pwrActivRev = -1;
 
 	//configure watchdog as 1s counter for uptime and to wake from sleep 
 	watchdogSetup();	
@@ -317,10 +376,8 @@ void loop() {
 		if (radio.DATALEN != sizeof(Message)) {
 			DebugSerln("INVALID PACKET");
 		} else {
-		    //
+		    // change from cast to a byte copy for security and portability
 			Message mess = *(Message*)radio.DATA;
-			//Message mess;
-			//memcpy(&mess, radio.DATA, sizeof(Message));
 
 			if (radio.ACKRequested()) {
 				DebugSerln("sending ack");
@@ -387,7 +444,10 @@ void loop() {
     }
 
     // Receive and process PIMA packagets
-    receivePIMAPacket();
+    //if (wdtCounter % 10 == 0) {
+    //    DebugSer("PIMA");
+        receivePIMAPacket();
+    //}
 
 }
 
